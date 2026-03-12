@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         TMN 2010 Automation Helper v14.00 beta
+// @name         Tmn TDS auto v14.01
 // @namespace    http://tampermonkey.net/
-// @version      14.00
-// @description  v14.00 — Human delays, OC/DTM 5-layer dedup, FOUC fix
+// @version      14.01
+// @description  v14.01 — Human delays, OC/DTM 5-layer dedup, FOUC fix
 // @author       You
 // @match        *://www.tmn2010.net/login.aspx*
 // @match        *://www.tmn2010.net/authenticated/*
