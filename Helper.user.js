@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         TMN TDS Auto v14.02
+// @name         TMN TDS Auto v14.04
 // @namespace    http://tampermonkey.net/
-// @version      14.02
-// @description  v14.02 — Human delays, OC/DTM 5-layer dedup, FOUC fix
+// @version      14.04
+// @description  v14.04 — Human delays, OC/DTM 5-layer dedup, FOUC fix
 // @author       You
 // @match        *://www.tmn2010.net/login.aspx*
 // @match        *://www.tmn2010.net/authenticated/*
@@ -228,7 +228,7 @@
         document.body.appendChild(loginOverlay);
       }
       console.log("[TMN AutoLogin]", message);
-      loginOverlay.textContent = `TMN TDS AutoLogin v14.02\n${message}`;
+      loginOverlay.textContent = `TMN TDS AutoLogin v14.04\n${message}`;
     }
 
     function clearTimers() {
@@ -1705,7 +1705,8 @@ let logoutNotificationSent = false;
     dtm: GM_getValue('cachedDtmDisplay', ''),
     oc: GM_getValue('cachedOcDisplay', ''),
     travel: GM_getValue('cachedTravelDisplay', ''),
-    health: GM_getValue('cachedHealthDisplay', '')
+    health: GM_getValue('cachedHealthDisplay', ''),
+    protection: GM_getValue('cachedProtectionDisplay', '')
   };
 
   // Cache element references to avoid repeated DOM queries
@@ -1713,7 +1714,8 @@ let logoutNotificationSent = false;
     dtm: null,
     oc: null,
     travel: null,
-    health: null
+    health: null,
+    protection: null
   };
 
   // Update timer display in UI - only updates DOM if value changed (prevents flicker)
@@ -1762,6 +1764,9 @@ let logoutNotificationSent = false;
     // Also update health display
     updateHealthDisplay();
 
+    // Update protection countdown
+    updateProtectionDisplay();
+
     // Check if OC/DTM just became ready and send Telegram alert
     try { checkOCDTMReadyAlerts(); } catch (e) {}
   }
@@ -1802,6 +1807,8 @@ let logoutNotificationSent = false;
       if (ocEl && cachedDisplayValues.oc) ocEl.innerHTML = cachedDisplayValues.oc;
       if (travelEl && cachedDisplayValues.travel) travelEl.innerHTML = cachedDisplayValues.travel;
       if (healthEl && cachedDisplayValues.health) healthEl.innerHTML = cachedDisplayValues.health;
+      const protEl = shadowRoot.querySelector('#tmn-protection-timer');
+      if (protEl && cachedDisplayValues.protection) protEl.innerHTML = cachedDisplayValues.protection;
     }
 
     // Update display every 5 seconds
@@ -1822,6 +1829,10 @@ let logoutNotificationSent = false;
     // Initial fetch after a short delay
     setTimeout(collectOCDTMTimers, 3000);
     setTimeout(fetchTravelTimerData, 4000);
+    setTimeout(fetchProtectionStatus, 5000);
+
+    // Refresh protection status every 5 minutes (doesn't change often)
+    setInterval(fetchProtectionStatus, 300000);
   }
 
   // ---------------------------
@@ -1839,23 +1850,59 @@ let logoutNotificationSent = false;
       const html = await response.text();
       const doc = new DOMParser().parseFromString(html, 'text/html');
       const allText = doc.body.textContent || "";
+      const lowerText = allText.toLowerCase();
 
-      const cooldownMatch = allText.match(/(\d+)\s*hours?\s*(\d+)\s*minutes?\s*(?:and\s*)?(\d+)?\s*seconds?\s*before you can travel/i);
+      // Debug: log first 300 chars of travel page for troubleshooting
+      console.log('[TMN][TRAVEL] Page text:', allText.substring(0, 300).replace(/\s+/g, ' '));
+
+      // Pattern 1: "X hours Y minutes Z seconds before you can travel"
+      let cooldownMatch = allText.match(/(\d+)\s*hours?\s*(\d+)\s*minutes?\s*(?:and\s*)?(\d+)?\s*seconds?\s*before you can travel/i);
+
+      // Pattern 2: "You must wait X minutes" or "wait X minutes and Y seconds"
+      if (!cooldownMatch) {
+        const waitMatch = allText.match(/(?:must|have to)\s*wait\s*(?:(\d+)\s*hours?)?\s*(?:(\d+)\s*minutes?)?\s*(?:(?:and\s*)?(\d+)\s*seconds?)?/i);
+        if (waitMatch && (waitMatch[1] || waitMatch[2] || waitMatch[3])) {
+          cooldownMatch = [null, waitMatch[1] || '0', waitMatch[2] || '0', waitMatch[3] || '0'];
+        }
+      }
+
+      // Pattern 3: "X minutes and Y seconds" anywhere near "travel"
+      if (!cooldownMatch) {
+        const timeMatch = allText.match(/(\d+)\s*minutes?\s*(?:and\s*)?(\d+)\s*seconds?/i);
+        if (timeMatch && (lowerText.includes('travel') || lowerText.includes('cooldown') || lowerText.includes('wait'))) {
+          cooldownMatch = [null, '0', timeMatch[1], timeMatch[2]];
+        }
+      }
+
       if (cooldownMatch) {
         const h = parseInt(cooldownMatch[1], 10) || 0;
         const m = parseInt(cooldownMatch[2], 10) || 0;
         const s = parseInt(cooldownMatch[3], 10) || 0;
-        const jetAvailable = allText.toLowerCase().includes('private jet') &&
-                            (allText.toLowerCase().includes('now available') || allText.toLowerCase().includes('jet travel is now'));
-        storeTravelTimerData({ normalCooldownRemaining: h*3600+m*60+s, jetAvailable, canTravelNormal: false, lastUpdate: Date.now() });
-        updateTimerDisplay();
-        return;
+        const totalSeconds = h * 3600 + m * 60 + s;
+
+        if (totalSeconds > 0) {
+          const jetAvailable = lowerText.includes('private jet') &&
+                              (lowerText.includes('now available') || lowerText.includes('jet travel is now'));
+          storeTravelTimerData({ normalCooldownRemaining: totalSeconds, jetAvailable, canTravelNormal: false, lastUpdate: Date.now() });
+          console.log(`[TMN][TRAVEL] Cooldown: ${h}h ${m}m ${s}s`);
+          updateTimerDisplay();
+          return;
+        }
       }
 
-      const canTravelNow = allText.toLowerCase().includes('select a destination') ||
-                          allText.toLowerCase().includes('where would you like') ||
-                          doc.querySelector('select[name*="city"]') !== null;
-      storeTravelTimerData({ normalCooldownRemaining: 0, jetAvailable: true, canTravelNormal: canTravelNow || true, lastUpdate: Date.now() });
+      // Check if can actually travel (page shows destination selection)
+      const canTravelNow = lowerText.includes('select a destination') ||
+                          lowerText.includes('where would you like') ||
+                          doc.querySelector('select[name*="city"]') !== null ||
+                          doc.querySelector('input[value*="Travel"]') !== null;
+
+      if (canTravelNow) {
+        storeTravelTimerData({ normalCooldownRemaining: 0, jetAvailable: true, canTravelNormal: true, lastUpdate: Date.now() });
+        console.log('[TMN][TRAVEL] Can travel now');
+      } else {
+        // Unknown state — don't update, keep existing timer running down
+        console.log('[TMN][TRAVEL] Could not determine travel status — keeping existing timer');
+      }
       updateTimerDisplay();
     } catch (err) {
       console.error('[TMN] Error fetching travel timer:', err);
@@ -1885,6 +1932,169 @@ let logoutNotificationSent = false;
     if (ts.canTravelJet) { const m = Math.ceil(ts.planeCooldownRemaining / 60); return { text: `Jet (${m}m)`, color: "amber" }; }
     const m = Math.ceil(ts.jetCooldownRemaining / 60);
     return { text: `${m}m`, color: "red" };
+  }
+
+  // ---------------------------
+  // New Player Protection Timer
+  // ---------------------------
+  const LS_PROTECTION_END = 'tmnProtectionEndTs';
+  const LS_PROTECTION_STATUS = 'tmnProtectionStatus'; // 'active', 'expired', 'left', 'none'
+
+  async function fetchProtectionStatus() {
+    try {
+      const statsURL = `${window.location.origin}/authenticated/statistics.aspx?p=p&_=${Date.now()}`;
+      console.log('[TMN][PROT] Fetching stats page:', statsURL);
+      const response = await fetch(statsURL, {
+        method: 'GET', headers: { 'Cache-Control': 'no-cache' }, credentials: 'same-origin'
+      });
+      if (!response.ok) {
+        console.log('[TMN][PROT] Stats page fetch failed:', response.status);
+        return;
+      }
+      const html = await response.text();
+      const doc = new DOMParser().parseFromString(html, 'text/html');
+
+      // Debug: log all span IDs containing "Protection" or "protection"
+      const allSpans = doc.querySelectorAll('span[id*="rotection"], span[id*="lblNew"]');
+      console.log(`[TMN][PROT] Found ${allSpans.length} protection-related spans`);
+      allSpans.forEach(s => console.log(`[TMN][PROT]   id="${s.id}" text="${s.textContent.trim().substring(0, 80)}"`));
+
+      // Also check for the div
+      const protDiv = doc.querySelector('.NewGridTitle');
+      if (protDiv) console.log(`[TMN][PROT] NewGridTitle: "${protDiv.textContent.trim()}"`);
+
+      // Check for protection end date element
+      const protEl = doc.getElementById('ctl00_main_lblNewPlayerProtectionEndDate');
+      if (protEl) {
+        const text = protEl.textContent.trim();
+        console.log(`[TMN][PROT] Protection element found: "${text}"`);
+
+        // Preferred: parse "(HH:MM:SS remaining)" or "(Xd HH:MM:SS remaining)" directly
+        // This avoids timezone issues between game server and local browser
+        const remainMatch = text.match(/\((?:(\d+)d\s*)?(\d+):(\d{2}):(\d{2})\s*remaining\)/i);
+        if (remainMatch) {
+          const days = parseInt(remainMatch[1] || '0', 10);
+          const hours = parseInt(remainMatch[2], 10);
+          const mins = parseInt(remainMatch[3], 10);
+          const secs = parseInt(remainMatch[4], 10);
+          const remainingMs = ((days * 24 + hours) * 3600 + mins * 60 + secs) * 1000;
+          const endTs = Date.now() + remainingMs;
+          localStorage.setItem(LS_PROTECTION_END, String(endTs));
+          localStorage.setItem(LS_PROTECTION_STATUS, 'active');
+          console.log(`[TMN][PROT] Protection remaining: ${days}d ${hours}h ${mins}m ${secs}s`);
+          updateProtectionDisplay();
+          return;
+        }
+
+        // Fallback: parse the end date but treat it as UTC to avoid timezone drift
+        const dateMatch = text.match(/(\d{2})-(\d{2})-(\d{4})\s+(\d{2}):(\d{2}):(\d{2})/);
+        if (dateMatch) {
+          const [, dd, mm, yyyy, HH, MM, SS] = dateMatch;
+          // Use UTC to match game server time
+          const endTs = Date.UTC(Number(yyyy), Number(mm) - 1, Number(dd), Number(HH), Number(MM), Number(SS));
+          localStorage.setItem(LS_PROTECTION_END, String(endTs));
+          localStorage.setItem(LS_PROTECTION_STATUS, 'active');
+          console.log(`[TMN][PROT] Protection ends (UTC): ${new Date(endTs).toUTCString()}`);
+          updateProtectionDisplay();
+          return;
+        } else {
+          console.log('[TMN][PROT] Could not parse date from:', text);
+        }
+      } else {
+        console.log('[TMN][PROT] Protection element NOT found by ID');
+        // Try alternative: search page text for the date pattern near "protection"
+        const pageText = doc.body.textContent || '';
+        const protMatch = pageText.match(/protection.*?(\d{2})-(\d{2})-(\d{4})\s+(\d{2}):(\d{2}):(\d{2})/i);
+        if (protMatch) {
+          const [, dd, mm, yyyy, HH, MM, SS] = protMatch;
+          const endTs = new Date(Number(yyyy), Number(mm) - 1, Number(dd), Number(HH), Number(MM), Number(SS)).getTime();
+          localStorage.setItem(LS_PROTECTION_END, String(endTs));
+          localStorage.setItem(LS_PROTECTION_STATUS, 'active');
+          console.log(`[TMN][PROT] Found via text search — ends: ${new Date(endTs).toLocaleString()}`);
+          updateProtectionDisplay();
+          return;
+        }
+      }
+
+      // Check if protection banner exists but no timer
+      const pageText = doc.body.textContent || '';
+      if (/new player protection is on/i.test(pageText) || /protection.*remaining/i.test(pageText)) {
+        console.log('[TMN][PROT] Protection text found but no parseable date');
+        if (!localStorage.getItem(LS_PROTECTION_END)) {
+          localStorage.setItem(LS_PROTECTION_STATUS, 'active');
+        }
+        updateProtectionDisplay();
+        return;
+      }
+
+      // No protection found on stats page
+      const existing = localStorage.getItem(LS_PROTECTION_STATUS);
+      if (existing === 'active') {
+        // Was active, now gone — either expired or left early
+        const endTs = parseInt(localStorage.getItem(LS_PROTECTION_END) || '0', 10);
+        if (endTs > 0 && Date.now() < endTs) {
+          localStorage.setItem(LS_PROTECTION_STATUS, 'left');
+          console.log('[TMN][PROT] Protection left early');
+        } else {
+          localStorage.setItem(LS_PROTECTION_STATUS, 'expired');
+          console.log('[TMN][PROT] Protection expired');
+        }
+      } else if (!existing) {
+        localStorage.setItem(LS_PROTECTION_STATUS, 'none');
+      }
+    } catch (err) {
+      console.error('[TMN] Error fetching protection status:', err);
+    }
+  }
+
+  function getProtectionDisplay() {
+    const status = localStorage.getItem(LS_PROTECTION_STATUS);
+    // Don't show anything until we've actually fetched once
+    if (!status) return null;
+    if (status === 'none') return { text: 'None', color: '#9ca3af' };
+    if (status === 'left') return { text: 'Left Early', color: '#ef4444' };
+    if (status === 'expired') return { text: 'Expired', color: '#9ca3af' };
+
+    // Active — calculate countdown
+    const endTs = parseInt(localStorage.getItem(LS_PROTECTION_END) || '0', 10);
+    if (!endTs) return { text: 'Active', color: '#10b981' };
+
+    const remaining = endTs - Date.now();
+    if (remaining <= 0) {
+      localStorage.setItem(LS_PROTECTION_STATUS, 'expired');
+      return { text: 'Expired', color: '#9ca3af' };
+    }
+
+    const days = Math.floor(remaining / 86400000);
+    const hours = Math.floor((remaining % 86400000) / 3600000);
+    const mins = Math.floor((remaining % 3600000) / 60000);
+
+    let text;
+    if (days > 0) {
+      text = `${days}d ${hours}h ${mins}m`;
+    } else if (hours > 0) {
+      text = `${hours}h ${mins}m`;
+    } else {
+      text = `${mins}m`;
+    }
+    return { text, color: '#10b981' };
+  }
+
+  function updateProtectionDisplay() {
+    if (!shadowRoot) return;
+    if (!timerElements.protection) {
+      timerElements.protection = shadowRoot.querySelector('#tmn-protection-timer');
+    }
+    if (!timerElements.protection) return;
+    const display = getProtectionDisplay();
+    // Don't update if we haven't fetched yet — keep cached or placeholder
+    if (!display) return;
+    const newHtml = `<span style="color:${display.color};">●</span> ${display.text}`;
+    if (cachedDisplayValues.protection !== newHtml) {
+      cachedDisplayValues.protection = newHtml;
+      GM_setValue('cachedProtectionDisplay', newHtml);
+      timerElements.protection.innerHTML = newHtml;
+    }
   }
 
   // ============================================================
@@ -3729,7 +3939,7 @@ let logoutNotificationSent = false;
     wrapper.innerHTML = `
       <div class="card">
         <div class="card-header d-flex justify-content-between align-items-center" id="tmn-drag-handle" style="cursor: grab;">
-          <strong>TMN TDS Auto v14.02</strong>
+          <strong>TMN TDS Auto v14.04</strong>
           <div>
             <button id="tmn-lock-btn" class="btn btn-sm btn-outline-secondary me-1" title="Lock/Unlock position">ð</button>
             <button id="tmn-settings-btn" class="btn btn-sm btn-outline-secondary me-1" title="Settings">
@@ -3784,7 +3994,7 @@ let logoutNotificationSent = false;
           </div>
           <div id="tmn-player-badge" style="font-size:0.85rem;color:#9ca3af;">Player: ${state.playerName || 'Unknown'}</div>
 
-          <!-- Status Grid: Health/Travel, OC/DTM -->
+          <!-- Status Grid: Health/Travel, OC/DTM, Protection -->
           <div class="mt-2 pt-2" style="border-top: 1px solid #1f2937; font-size: 0.85rem;">
             <div class="d-flex justify-content-between align-items-center mb-2">
               <div class="d-flex align-items-center" style="width: 50%;">
@@ -3796,7 +4006,7 @@ let logoutNotificationSent = false;
                 <span id="tmn-travel-timer" style="font-weight: 500;">${cachedDisplayValues.travel || '<span style="color:#9ca3af;">●</span> --'}</span>
               </div>
             </div>
-            <div class="d-flex justify-content-between align-items-center">
+            <div class="d-flex justify-content-between align-items-center mb-2">
               <div class="d-flex align-items-center" style="width: 50%;">
                 <span style="color:#9ca3af; width: 55px;">OC:</span>
                 <span id="tmn-oc-timer" style="font-weight: 500;">${cachedDisplayValues.oc || '<span style="color:#9ca3af;">●</span> --'}</span>
@@ -3805,6 +4015,10 @@ let logoutNotificationSent = false;
                 <span style="color:#9ca3af; width: 55px;">DTM:</span>
                 <span id="tmn-dtm-timer" style="font-weight: 500;">${cachedDisplayValues.dtm || '<span style="color:#9ca3af;">●</span> --'}</span>
               </div>
+            </div>
+            <div class="d-flex align-items-center">
+              <span style="color:#9ca3af; width: 55px;">Prot:</span>
+              <span id="tmn-protection-timer" style="font-weight: 500;">${cachedDisplayValues.protection || '<span style="color:#9ca3af;">●</span> --'}</span>
             </div>
           </div>
         </div>
@@ -4344,6 +4558,8 @@ let logoutNotificationSent = false;
         localStorage.removeItem('tmnPendingDTMHandle');
         localStorage.removeItem('tmnPendingOCAcceptURL');
         localStorage.removeItem('tmnPendingDTMAcceptURL');
+        localStorage.removeItem('tmnProtectionEndTs');
+        localStorage.removeItem('tmnProtectionStatus');
         updateStatus('Player data cleared — reload to detect new player');
         if (shadowRoot.updatePlayerBadge) shadowRoot.updatePlayerBadge();
       }
@@ -5038,7 +5254,7 @@ async function mainLoop() {
 
     // Show appropriate status based on tab status
     if (tabManager.isMasterTab) {
-      updateStatus("TMN TDS Auto v14.02 loaded - Master tab (single tab mode)");
+      updateStatus("TMN TDS Auto v14.04 loaded - Master tab (single tab mode)");
     } else {
       updateStatus("⏸ Secondary tab - close this tab or it will remain inactive");
     }
