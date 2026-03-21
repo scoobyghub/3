@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         TMN TDS Auto v14.04
+// @name         TMN TDS Auto v14.05
 // @namespace    http://tampermonkey.net/
-// @version      14.04
-// @description  v14.04 — Human delays, OC/DTM 5-layer dedup, FOUC fix
+// @version      14.05
+// @description  v14.05 — Human delays, OC/DTM 5-layer dedup, FOUC fix
 // @author       You
 // @match        *://www.tmn2010.net/login.aspx*
 // @match        *://www.tmn2010.net/authenticated/*
@@ -228,7 +228,7 @@
         document.body.appendChild(loginOverlay);
       }
       console.log("[TMN AutoLogin]", message);
-      loginOverlay.textContent = `TMN TDS AutoLogin v14.04\n${message}`;
+      loginOverlay.textContent = `TMN TDS AutoLogin v14.05\n${message}`;
     }
 
     function clearTimers() {
@@ -1767,6 +1767,9 @@ let logoutNotificationSent = false;
     // Update protection countdown
     updateProtectionDisplay();
 
+    // Check protection expiry warnings
+    try { checkProtectionWarnings(); } catch (e) {}
+
     // Check if OC/DTM just became ready and send Telegram alert
     try { checkOCDTMReadyAlerts(); } catch (e) {}
   }
@@ -2094,6 +2097,89 @@ let logoutNotificationSent = false;
       cachedDisplayValues.protection = newHtml;
       GM_setValue('cachedProtectionDisplay', newHtml);
       timerElements.protection.innerHTML = newHtml;
+    }
+  }
+
+  // ---------------------------
+  // OC/DTM Ready Telegram Alerts (edge-triggered)
+  // ---------------------------
+  function checkOCDTMReadyAlerts() {
+    if (!telegramConfig.enabled || !state.notifyOCDTMReady) return;
+    if (state.inJail) return;
+
+    const dtmStatus = getDTMTimerStatus();
+    if (dtmStatus) {
+      const dtmReady = dtmStatus.canDTM === true || (dtmStatus.totalSeconds || 0) <= 0;
+      const lastState = localStorage.getItem('tmnDTMReadyAlertState');
+      if (dtmReady && lastState !== 'ready') {
+        localStorage.setItem('tmnDTMReadyAlertState', 'ready');
+        sendTelegramMessage(
+          '✅ <b>DTM is now READY!</b>\n\n' +
+          `Player: ${state.playerName || 'Unknown'}\n` +
+          `Time: ${new Date().toLocaleString()}\n` +
+          '🚚 Drug Trade Mission is available'
+        );
+      } else if (!dtmReady && lastState === 'ready') {
+        localStorage.setItem('tmnDTMReadyAlertState', 'cooldown');
+      }
+    }
+
+    const ocStatus = getOCTimerStatus();
+    if (ocStatus) {
+      const ocReady = ocStatus.canOC === true || (ocStatus.totalSeconds || 0) <= 0;
+      const lastState = localStorage.getItem('tmnOCReadyAlertState');
+      if (ocReady && lastState !== 'ready') {
+        localStorage.setItem('tmnOCReadyAlertState', 'ready');
+        sendTelegramMessage(
+          '✅ <b>OC is now READY!</b>\n\n' +
+          `Player: ${state.playerName || 'Unknown'}\n` +
+          `Time: ${new Date().toLocaleString()}\n` +
+          '🕵️ Organized Crime is available'
+        );
+      } else if (!ocReady && lastState === 'ready') {
+        localStorage.setItem('tmnOCReadyAlertState', 'cooldown');
+      }
+    }
+  }
+
+  // ---------------------------
+  // Protection Expiry Telegram Warnings
+  // ---------------------------
+  function checkProtectionWarnings() {
+    if (!telegramConfig.enabled) return;
+    const status = localStorage.getItem(LS_PROTECTION_STATUS);
+    if (status !== 'active') return;
+
+    const endTs = parseInt(localStorage.getItem(LS_PROTECTION_END) || '0', 10);
+    if (!endTs) return;
+
+    const remaining = endTs - Date.now();
+    if (remaining <= 0) return;
+
+    const hours = remaining / 3600000;
+
+    // 12-hour warning (between 11.5h and 12.5h to avoid re-firing)
+    const sent12h = localStorage.getItem('tmnProtWarn12h');
+    if (!sent12h && hours <= 12 && hours > 11) {
+      localStorage.setItem('tmnProtWarn12h', 'true');
+      sendTelegramMessage(
+        '⚠️ <b>Protection Expiring in ~12 Hours!</b>\n\n' +
+        `Player: ${state.playerName || 'Unknown'}\n` +
+        `Time remaining: ${Math.floor(hours)}h ${Math.floor((remaining % 3600000) / 60000)}m\n\n` +
+        '🛡️ New player protection will end soon'
+      );
+    }
+
+    // 6-hour warning (between 5.5h and 6.5h)
+    const sent6h = localStorage.getItem('tmnProtWarn6h');
+    if (!sent6h && hours <= 6 && hours > 5) {
+      localStorage.setItem('tmnProtWarn6h', 'true');
+      sendTelegramMessage(
+        '🚨 <b>Protection Expiring in ~6 Hours!</b>\n\n' +
+        `Player: ${state.playerName || 'Unknown'}\n` +
+        `Time remaining: ${Math.floor(hours)}h ${Math.floor((remaining % 3600000) / 60000)}m\n\n` +
+        '🛡️ New player protection ending soon — prepare for attacks!'
+      );
     }
   }
 
@@ -2465,7 +2551,7 @@ let logoutNotificationSent = false;
 
         // Regular mail - check against last notified ID stored in localStorage
         if (telegramConfig.enabled && telegramConfig.notifyMessages) {
-          const lastNotifiedId = localStorage.getItem('tmnLastNotifiedMailId');
+          let lastNotifiedId = localStorage.getItem('tmnLastNotifiedMailId');
 
           // FIRST RUN: If we've never notified before, set the high-water mark
           // to the newest mail ID so we don't spam about old messages
@@ -2488,17 +2574,25 @@ let logoutNotificationSent = false;
 
           // Only notify for mails we haven't notified about (compare IDs numerically - higher = newer)
           if (parseInt(mailId) > parseInt(lastNotifiedId)) {
+            // Always advance the high-water mark immediately to prevent re-processing
+            localStorage.setItem('tmnLastNotifiedMailId', mailId);
+            lastNotifiedId = mailId;
+
             // TIMESTAMP CHECK: Only notify about mails from the last 5 minutes
             const mailTs = parseTMNDateFromText(rowText);
             const fiveMinAgo = Date.now() - (5 * 60 * 1000);
             if (mailTs > 0 && mailTs < fiveMinAgo) {
-              // Old mail — update high-water mark but don't alert
               console.log(`[TMN][MAIL] Skipping old mail id=${mailId} (age: ${Math.round((Date.now() - mailTs) / 60000)}min)`);
-              localStorage.setItem('tmnLastNotifiedMailId', mailId);
               continue;
             }
 
-            console.log(`[TMN][MAIL] New recent mail: id=${mailId} from="${sender}" subject="${subject}"`);
+            // If timestamp couldn't be parsed, still notify (better to notify than miss)
+            // but log it for debugging
+            if (mailTs === 0) {
+              console.log(`[TMN][MAIL] Could not parse timestamp for mail id=${mailId}, notifying anyway`);
+            }
+
+            console.log(`[TMN][MAIL] New mail: id=${mailId} from="${sender}" subject="${subject}"`);
 
             sendTelegramMessage(
               `📬 <b>New Message!</b>\n\n` +
@@ -2508,8 +2602,6 @@ let logoutNotificationSent = false;
               `Subject: ${subject}\n\n` +
               `🔗 Check your mailbox at TMN2010`
             );
-
-            localStorage.setItem('tmnLastNotifiedMailId', mailId);
 
             // Try to fetch content
             setTimeout(async () => {
@@ -3939,7 +4031,7 @@ let logoutNotificationSent = false;
     wrapper.innerHTML = `
       <div class="card">
         <div class="card-header d-flex justify-content-between align-items-center" id="tmn-drag-handle" style="cursor: grab;">
-          <strong>TMN TDS Auto v14.04</strong>
+          <strong>TMN TDS Auto v14.05</strong>
           <div>
             <button id="tmn-lock-btn" class="btn btn-sm btn-outline-secondary me-1" title="Lock/Unlock position">ð</button>
             <button id="tmn-settings-btn" class="btn btn-sm btn-outline-secondary me-1" title="Settings">
@@ -3972,8 +4064,8 @@ let logoutNotificationSent = false;
                 <label class="form-check-label" for="tmn-auto-booze">Auto Booze</label>
               </div>
               <div class="form-check form-switch">
-                <input class="form-check-input" type="checkbox" id="tmn-auto-garage">
-                <label class="form-check-label" for="tmn-auto-garage">Auto Garage</label>
+                <input class="form-check-input" type="checkbox" id="tmn-auto-dtm">
+                <label class="form-check-label" for="tmn-auto-dtm">🚚 Auto DTM</label>
               </div>
               <div class="form-check form-switch">
                 <input class="form-check-input" type="checkbox" id="tmn-auto-jail">
@@ -3984,8 +4076,8 @@ let logoutNotificationSent = false;
                 <label class="form-check-label" for="tmn-auto-oc">🕵️ Auto OC</label>
               </div>
               <div class="form-check form-switch">
-                <input class="form-check-input" type="checkbox" id="tmn-auto-dtm">
-                <label class="form-check-label" for="tmn-auto-dtm">🚚 Auto DTM</label>
+                <input class="form-check-input" type="checkbox" id="tmn-auto-garage">
+                <label class="form-check-label" for="tmn-auto-garage">Auto Garage</label>
               </div>
               <div class="form-check form-switch" style="grid-column: 2;">
                 <input class="form-check-input" type="checkbox" id="tmn-notify-ocdtm-ready">
@@ -4560,6 +4652,8 @@ let logoutNotificationSent = false;
         localStorage.removeItem('tmnPendingDTMAcceptURL');
         localStorage.removeItem('tmnProtectionEndTs');
         localStorage.removeItem('tmnProtectionStatus');
+        localStorage.removeItem('tmnProtWarn12h');
+        localStorage.removeItem('tmnProtWarn6h');
         updateStatus('Player data cleared — reload to detect new player');
         if (shadowRoot.updatePlayerBadge) shadowRoot.updatePlayerBadge();
       }
@@ -5254,7 +5348,7 @@ async function mainLoop() {
 
     // Show appropriate status based on tab status
     if (tabManager.isMasterTab) {
-      updateStatus("TMN TDS Auto v14.04 loaded - Master tab (single tab mode)");
+      updateStatus("TMN TDS Auto v14.05 loaded - Master tab (single tab mode)");
     } else {
       updateStatus("⏸ Secondary tab - close this tab or it will remain inactive");
     }
