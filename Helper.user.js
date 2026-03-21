@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         TMN TDS Auto v14.06
+// @name         TMN TDS Auto v14.07
 // @namespace    http://tampermonkey.net/
-// @version      14.06
-// @description  v14.06 — Human delays, OC/DTM 5-layer dedup, FOUC fix
+// @version      14.07
+// @description  v14.07 — Human delays, OC/DTM 5-layer dedup, FOUC fix
 // @author       You
 // @match        *://www.tmn2010.net/login.aspx*
 // @match        *://www.tmn2010.net/authenticated/*
@@ -228,7 +228,7 @@
         document.body.appendChild(loginOverlay);
       }
       console.log("[TMN AutoLogin]", message);
-      loginOverlay.textContent = `TMN TDS AutoLogin v14.06\n${message}`;
+      loginOverlay.textContent = `TMN TDS AutoLogin v14.07\n${message}`;
     }
 
     function clearTimers() {
@@ -2460,18 +2460,21 @@ let logoutNotificationSent = false;
 
         // Check DTM invite - use localStorage to track if already processed
         const isDTMInvite = /(dtm\s*invitation|dtm\s*invite|drug\s*trade)/i.test(rowText);
+        if (isDTMInvite) {
+          console.log(`[TMN][MAIL] DTM invite detected! mailId=${mailId} autoDTM=${state.autoDTM}`);
+        }
         if (isDTMInvite && state.autoDTM) {
           // DEDUP LAYER 1: Cooldown — skip if we already accepted a DTM within last 2 hours
           const lastDTMAcceptTs = parseInt(localStorage.getItem(LS_LAST_DTM_ACCEPT_TS) || '0', 10);
           if (lastDTMAcceptTs > 0 && (Date.now() - lastDTMAcceptTs) < 7200000) {
-            console.log(`[TMN][MAIL] DTM invite skipped — already accepted ${Math.round((Date.now() - lastDTMAcceptTs) / 60000)}min ago`);
+            console.log(`[TMN][MAIL] DTM BLOCKED by Layer 1 (cooldown) — accepted ${Math.round((Date.now() - lastDTMAcceptTs) / 60000)}min ago`);
             localStorage.setItem(LS_LAST_DTM_INVITE_MAIL_ID, mailId);
             continue;
           }
 
           // DEDUP LAYER 2: Already processing — skip if we have a pending DTM handle
           if (localStorage.getItem('tmnPendingDTMHandle') === 'true' || localStorage.getItem(LS_PENDING_DTM_URL)) {
-            console.log('[TMN][MAIL] DTM invite skipped — already processing a DTM');
+            console.log(`[TMN][MAIL] DTM BLOCKED by Layer 2 (already processing) — handle=${localStorage.getItem('tmnPendingDTMHandle')} url=${!!localStorage.getItem(LS_PENDING_DTM_URL)}`);
             localStorage.setItem(LS_LAST_DTM_INVITE_MAIL_ID, mailId);
             continue;
           }
@@ -2479,6 +2482,7 @@ let logoutNotificationSent = false;
           // DEDUP LAYER 3: Mail ID — skip if we've already seen this exact mail
           const lastSeen = localStorage.getItem(LS_LAST_DTM_INVITE_MAIL_ID);
           if (lastSeen === mailId) {
+            console.log(`[TMN][MAIL] DTM BLOCKED by Layer 3 (same mail ID) — ${mailId}`);
             continue;
           }
 
@@ -2486,20 +2490,19 @@ let logoutNotificationSent = false;
           const inviteTs = parseTMNDateFromText(rowText);
           const fiveMinAgo = Date.now() - (5 * 60 * 1000);
           if (inviteTs > 0 && inviteTs < fiveMinAgo) {
-            console.log(`[TMN][MAIL] DTM invite skipped — old mail (age: ${Math.round((Date.now() - inviteTs) / 60000)}min)`);
+            console.log(`[TMN][MAIL] DTM BLOCKED by Layer 4 (old mail) — age: ${Math.round((Date.now() - inviteTs) / 60000)}min`);
             localStorage.setItem(LS_LAST_DTM_INVITE_MAIL_ID, mailId);
             continue;
           }
 
           // DEDUP LAYER 5: If we can't parse the date, only accept if mail ID is HIGHER than last seen
-          // (mail IDs are sequential — higher = newer)
           if (inviteTs === 0 && lastSeen && parseInt(mailId) <= parseInt(lastSeen)) {
-            console.log(`[TMN][MAIL] DTM invite skipped — mail ID ${mailId} <= last seen ${lastSeen} (unparseable date)`);
+            console.log(`[TMN][MAIL] DTM BLOCKED by Layer 5 (ID ordering) — mailId=${mailId} lastSeen=${lastSeen}`);
             continue;
           }
 
           // All checks passed — this is a genuinely new DTM invite
-          console.log(`[TMN][MAIL] NEW DTM invite! id=${mailId} subject="${subject}"`);
+          console.log(`[TMN][MAIL] ✅ DTM invite PASSED all 5 layers! id=${mailId} subject="${subject}"`);
           await handleNewDTMInvite(mailId, href);
           continue;
         }
@@ -4031,7 +4034,7 @@ let logoutNotificationSent = false;
     wrapper.innerHTML = `
       <div class="card">
         <div class="card-header d-flex justify-content-between align-items-center" id="tmn-drag-handle" style="cursor: grab;">
-          <strong>TMN TDS Auto v14.06</strong>
+          <strong>TMN TDS Auto v14.07</strong>
           <div>
             <button id="tmn-lock-btn" class="btn btn-sm btn-outline-secondary me-1" title="Lock/Unlock position">ð</button>
             <button id="tmn-settings-btn" class="btn btn-sm btn-outline-secondary me-1" title="Settings">
@@ -5348,7 +5351,7 @@ async function mainLoop() {
 
     // Show appropriate status based on tab status
     if (tabManager.isMasterTab) {
-      updateStatus("TMN TDS Auto v14.06 loaded - Master tab (single tab mode)");
+      updateStatus("TMN TDS Auto v14.07 loaded - Master tab (single tab mode)");
     } else {
       updateStatus("⏸ Secondary tab - close this tab or it will remain inactive");
     }
