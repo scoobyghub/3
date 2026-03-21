@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         TMN TDS Auto v14.07
+// @name         TMN TDS Auto v14.08
 // @namespace    http://tampermonkey.net/
-// @version      14.07
-// @description  v14.07 — Human delays, OC/DTM 5-layer dedup, FOUC fix
+// @version      14.08
+// @description  v14.08 — Human delays, OC/DTM 5-layer dedup, FOUC fix
 // @author       You
 // @match        *://www.tmn2010.net/login.aspx*
 // @match        *://www.tmn2010.net/authenticated/*
@@ -228,7 +228,7 @@
         document.body.appendChild(loginOverlay);
       }
       console.log("[TMN AutoLogin]", message);
-      loginOverlay.textContent = `TMN TDS AutoLogin v14.07\n${message}`;
+      loginOverlay.textContent = `TMN TDS AutoLogin v14.08\n${message}`;
     }
 
     function clearTimers() {
@@ -2554,12 +2554,11 @@ let logoutNotificationSent = false;
 
         // Regular mail - check against last notified ID stored in localStorage
         if (telegramConfig.enabled && telegramConfig.notifyMessages) {
-          let lastNotifiedId = localStorage.getItem('tmnLastNotifiedMailId');
+          const lastNotifiedId = localStorage.getItem('tmnLastNotifiedMailId');
 
           // FIRST RUN: If we've never notified before, set the high-water mark
           // to the newest mail ID so we don't spam about old messages
           if (lastNotifiedId === null) {
-            // Find the highest mail ID in the inbox and set it as baseline
             let maxId = 0;
             for (const row of rows) {
               const rowLink = [...row.querySelectorAll('a[href*="mailbox.aspx"]')].find(a =>
@@ -2575,13 +2574,12 @@ let logoutNotificationSent = false;
             break;
           }
 
-          // Only notify for mails we haven't notified about (compare IDs numerically - higher = newer)
+          // Always advance high-water mark for ANY mail we see, even if we don't notify
+          // This prevents the same mail triggering repeatedly
           if (parseInt(mailId) > parseInt(lastNotifiedId)) {
-            // Always advance the high-water mark immediately to prevent re-processing
             localStorage.setItem('tmnLastNotifiedMailId', mailId);
-            lastNotifiedId = mailId;
 
-            // TIMESTAMP CHECK: Only notify about mails from the last 5 minutes
+            // TIMESTAMP CHECK: Only send Telegram for mails from the last 5 minutes
             const mailTs = parseTMNDateFromText(rowText);
             const fiveMinAgo = Date.now() - (5 * 60 * 1000);
             if (mailTs > 0 && mailTs < fiveMinAgo) {
@@ -2589,24 +2587,16 @@ let logoutNotificationSent = false;
               continue;
             }
 
-            // If timestamp couldn't be parsed, still notify (better to notify than miss)
-            // but log it for debugging
-            if (mailTs === 0) {
-              console.log(`[TMN][MAIL] Could not parse timestamp for mail id=${mailId}, notifying anyway`);
-            }
-
             console.log(`[TMN][MAIL] New mail: id=${mailId} from="${sender}" subject="${subject}"`);
 
             sendTelegramMessage(
               `📬 <b>New Message!</b>\n\n` +
               `Player: ${state.playerName || 'Unknown'}\n` +
-              `Time: ${new Date().toLocaleString()}\n` +
               `From: ${sender}\n` +
-              `Subject: ${subject}\n\n` +
-              `🔗 Check your mailbox at TMN2010`
+              `Subject: ${subject}`
             );
 
-            // Try to fetch content
+            // Fetch and send content as a second message
             setTimeout(async () => {
               try {
                 const mailText = await fetchLatestMailContent();
@@ -4034,7 +4024,7 @@ let logoutNotificationSent = false;
     wrapper.innerHTML = `
       <div class="card">
         <div class="card-header d-flex justify-content-between align-items-center" id="tmn-drag-handle" style="cursor: grab;">
-          <strong>TMN TDS Auto v14.07</strong>
+          <strong>TMN TDS Auto v14.08</strong>
           <div>
             <button id="tmn-lock-btn" class="btn btn-sm btn-outline-secondary me-1" title="Lock/Unlock position">ð</button>
             <button id="tmn-settings-btn" class="btn btn-sm btn-outline-secondary me-1" title="Settings">
@@ -5351,7 +5341,7 @@ async function mainLoop() {
 
     // Show appropriate status based on tab status
     if (tabManager.isMasterTab) {
-      updateStatus("TMN TDS Auto v14.07 loaded - Master tab (single tab mode)");
+      updateStatus("TMN TDS Auto v14.08 loaded - Master tab (single tab mode)");
     } else {
       updateStatus("⏸ Secondary tab - close this tab or it will remain inactive");
     }
