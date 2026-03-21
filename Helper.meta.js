@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         TMN TDS Auto v14.05
+// @name         TMN TDS Auto v14.06
 // @namespace    http://tampermonkey.net/
-// @version      14.05
-// @description  v14.05 — Human delays, OC/DTM 5-layer dedup, FOUC fix
+// @version      14.06
+// @description  v14.06 — Human delays, OC/DTM 5-layer dedup, FOUC fix
 // @author       You
 // @match        *://www.tmn2010.net/login.aspx*
 // @match        *://www.tmn2010.net/authenticated/*
